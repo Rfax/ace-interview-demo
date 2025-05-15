@@ -13,7 +13,6 @@ import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, For
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
-// import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"; // No longer used
 import { AppLogo } from "@/components/icons";
 import { Briefcase, Building2, Mic, Send, RefreshCw, Loader2, CheckCircle, Info, Lightbulb, MessageSquare, ThumbsUp, Brain, Target, ThumbsDown } from "lucide-react";
 import { formatTime } from "@/lib/utils";
@@ -61,7 +60,7 @@ export default function InterviewPage() {
   const [isRecording, setIsRecording] = useState(false);
   const speechRecognitionRef = useRef<SpeechRecognition | null>(null);
   const textBeforeRecordingRef = useRef<string>("");
-  const currentSpokenTextRef = useRef<string>(""); // Tracks spoken text within the current session
+  const currentRecordingSessionTranscriptRef = useRef<string>("");
   
   const { toast } = useToast();
 
@@ -81,24 +80,25 @@ export default function InterviewPage() {
 
         speechRecognitionRef.current.onresult = (event: any) => {
           let interimTranscript = '';
-          let finalTranscript = '';
+          let finalTranscriptForThisSession = '';
     
           for (let i = 0; i < event.results.length; ++i) {
             if (event.results[i].isFinal) {
-              finalTranscript += event.results[i][0].transcript + ' ';
+              finalTranscriptForThisSession += event.results[i][0].transcript + ' ';
             } else {
               interimTranscript += event.results[i][0].transcript;
             }
           }
           
-          currentSpokenTextRef.current = finalTranscript.trim() + (interimTranscript ? (finalTranscript ? ' ' : '') + interimTranscript : '');
+          // Update the current session's transcript (includes final + current interim)
+          currentRecordingSessionTranscriptRef.current = finalTranscriptForThisSession.trim() + (interimTranscript ? (finalTranscriptForThisSession ? ' ' : '') + interimTranscript : '');
           
           let combinedAnswer = textBeforeRecordingRef.current;
-          if (currentSpokenTextRef.current) {
-            if (combinedAnswer && !combinedAnswer.endsWith(" ") && !currentSpokenTextRef.current.startsWith(" ")) {
+          if (currentRecordingSessionTranscriptRef.current) {
+            if (combinedAnswer && !combinedAnswer.endsWith(" ") && !currentRecordingSessionTranscriptRef.current.startsWith(" ")) {
               combinedAnswer += " ";
             }
-            combinedAnswer += currentSpokenTextRef.current;
+            combinedAnswer += currentRecordingSessionTranscriptRef.current;
           }
           setAnswer(combinedAnswer);
         };
@@ -110,24 +110,28 @@ export default function InterviewPage() {
             description: event.error === 'no-speech' ? "No speech detected. Please try again." : "An error occurred during speech recognition.",
             variant: "destructive",
           });
-          if(isRecording) setIsRecording(false);
+          if(isRecording) setIsRecording(false); // Ensure recording state is updated
         };
     
         speechRecognitionRef.current.onend = () => {
-          if (isRecording) { 
-            setIsRecording(false); 
-          }
-          // Finalize the text by consolidating textBeforeRecording + currentSpokenText
+           // Finalize the answer when recognition ends (could be natural end or stop())
            let finalAnswer = textBeforeRecordingRef.current;
-           if (currentSpokenTextRef.current) {
-             if (finalAnswer && !finalAnswer.endsWith(" ") && !currentSpokenTextRef.current.startsWith(" ")) {
+           if (currentRecordingSessionTranscriptRef.current.trim()) {
+             if (finalAnswer && !finalAnswer.endsWith(" ") && !currentRecordingSessionTranscriptRef.current.trim().startsWith(" ")) {
                finalAnswer += " ";
              }
-             finalAnswer += currentSpokenTextRef.current.trim(); // Use trimmed final spoken text
+             finalAnswer += currentRecordingSessionTranscriptRef.current.trim();
            }
            setAnswer(finalAnswer);
-           textBeforeRecordingRef.current = finalAnswer; // Update for next potential recording
-           currentSpokenTextRef.current = ""; // Reset for next session
+           textBeforeRecordingRef.current = finalAnswer; // Persist for next potential recording session
+           // currentRecordingSessionTranscriptRef is reset at the start of a new recording
+           
+           // Only set isRecording to false if it was programmatically stopped or naturally ended.
+           // If toggleRecording was called to stop, it will handle setIsRecording.
+           // This handles cases where recognition stops by itself (e.g. long pause).
+           if (speechRecognitionRef.current && isRecording) {
+             setIsRecording(false);
+           }
         };
 
       } else if (!SpeechRecognitionAPI) {
@@ -135,7 +139,7 @@ export default function InterviewPage() {
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [toast]); // Removed isRecording dependency here
+  }, [toast, isRecording]); // Added isRecording to deps to re-attach onend if needed, though core instance is stable
 
   const startStopwatch = useCallback(() => {
     if (stopwatchIntervalRef.current) clearInterval(stopwatchIntervalRef.current);
@@ -160,9 +164,10 @@ export default function InterviewPage() {
     setFeedback(null);
     setAnswer("");
     textBeforeRecordingRef.current = ""; 
-    currentSpokenTextRef.current = "";
+    currentRecordingSessionTranscriptRef.current = "";
     if (isRecording && speechRecognitionRef.current) {
       speechRecognitionRef.current.stop(); 
+      setIsRecording(false);
     }
     try {
       const questionData = await generateInterviewQuestion(values as GenerateInterviewQuestionInput);
@@ -188,6 +193,7 @@ export default function InterviewPage() {
     stopStopwatch();
     if (isRecording && speechRecognitionRef.current) {
       speechRecognitionRef.current.stop(); 
+      setIsRecording(false);
     }
     try {
       const feedbackData = await generateAnswerFeedback({
@@ -221,10 +227,12 @@ export default function InterviewPage() {
     }
     if (isRecording) {
       speechRecognitionRef.current.stop(); 
+      setIsRecording(false); // Explicitly set isRecording to false here
+      // The onend handler will finalize the text
     } else {
       try {
         textBeforeRecordingRef.current = answer; // Capture current text
-        currentSpokenTextRef.current = ""; // Reset spoken text for new session
+        currentRecordingSessionTranscriptRef.current = ""; // Reset transcript for new session
         speechRecognitionRef.current.start();
         setIsRecording(true);
         if (!isStopwatchRunning && currentStep === "question_generated") {
@@ -255,40 +263,41 @@ export default function InterviewPage() {
     setElapsedTime(0);
     stopStopwatch();
     textBeforeRecordingRef.current = "";
-    currentSpokenTextRef.current = "";
+    currentRecordingSessionTranscriptRef.current = "";
     if (isRecording && speechRecognitionRef.current) {
       speechRecognitionRef.current.stop();
+      setIsRecording(false);
     }
   };
 
   useEffect(() => {
+    // Cleanup effect for stopwatch and speech recognition instance
     return () => {
       if (stopwatchIntervalRef.current) {
         clearInterval(stopwatchIntervalRef.current);
       }
+      // Ensure speech recognition is stopped and handlers are detached when component unmounts
       if (speechRecognitionRef.current) {
          if(isRecording) speechRecognitionRef.current.stop();
-         // Detach handlers to prevent issues on unmount
          speechRecognitionRef.current.onresult = null;
          speechRecognitionRef.current.onerror = null;
          speechRecognitionRef.current.onend = null;
+         // speechRecognitionRef.current = null; // Might be too aggressive if re-renders cause issues
       }
     };
-  }, [isRecording]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Empty dependency array: run only on mount and unmount
+
 
   const getScoreColor = (score: number | undefined): string => {
-    if (score === undefined) return "text-gray-400"; // Fallback for undefined score
+    if (score === undefined) return "text-gray-400"; 
     if (score <= 1) return "text-red-500";
     if (score === 2) return "text-orange-500";
     if (score === 3) return "text-yellow-500";
     if (score === 4) return "text-lime-500"; 
     if (score >= 5) return "text-green-600";
-    return "text-gray-400"; // Default
+    return "text-gray-400";
   };
-
-  const OverallFeedbackIcon = feedback?.overallFeedback?.score !== undefined && feedback.overallFeedback.score <= 2 ? ThumbsDown : ThumbsUp;
-  const overallIconColor = getScoreColor(feedback?.overallFeedback?.score);
-
 
   return (
     <div className="flex flex-col min-h-screen bg-background">
@@ -398,7 +407,7 @@ export default function InterviewPage() {
                     onChange={(e) => {
                       if (!isRecording) { 
                         setAnswer(e.target.value);
-                        textBeforeRecordingRef.current = e.target.value;
+                        textBeforeRecordingRef.current = e.target.value; // Keep this in sync
                       }
                     }}
                     rows={8}
@@ -445,7 +454,16 @@ export default function InterviewPage() {
                 <Accordion type="single" collapsible defaultValue="item-1" className="w-full">
                   <AccordionItem value="item-1">
                     <AccordionTrigger className="text-xl hover:no-underline">
-                      <OverallFeedbackIcon className={`mr-2 h-5 w-5 ${overallIconColor}`} /> Overall Feedback
+                      {(() => {
+                        if (feedback.overallFeedback && typeof feedback.overallFeedback.score === 'number') {
+                          const score = feedback.overallFeedback.score;
+                          const IconComponent = score <= 2 ? ThumbsDown : ThumbsUp;
+                          const iconColor = getScoreColor(score);
+                          return <IconComponent className={`mr-2 h-5 w-5 ${iconColor}`} />;
+                        }
+                        return <ThumbsUp className={`mr-2 h-5 w-5 ${getScoreColor(undefined)}`} />;
+                      })()}
+                      Overall Feedback
                     </AccordionTrigger>
                     <AccordionContent className="text-base leading-relaxed p-1">
                       {feedback.overallFeedback.text} (Score: {feedback.overallFeedback.score}/5)
@@ -495,4 +513,3 @@ export default function InterviewPage() {
     </div>
   );
 }
-
