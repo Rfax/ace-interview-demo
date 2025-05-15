@@ -2,9 +2,14 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+  The body font-family is now handled by Tailwind's `font-sans` class,
+  which is configured in tailwind.config.ts to use var(--font-inter).
+  So, this rule is no longer needed here.
 body {
   font-family: var(--font-inter), sans-serif;
 }
+*/
 
 @layer base {
   :root {
@@ -101,5 +106,6 @@ body {
   body {
     @apply bg-background text-foreground;
     min-height: 100vh;
+    /* The font-family is now applied via the `font-sans` class in RootLayout's body tag */
   }
 }

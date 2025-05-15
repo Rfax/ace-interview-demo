@@ -5,7 +5,7 @@ import { Toaster } from "@/components/ui/toaster";
 
 const inter = Inter({
   subsets: ['latin'],
-  variable: '--font-inter',
+  variable: '--font-inter', // This defines the CSS variable name
 });
 
 export const metadata: Metadata = {
@@ -19,8 +19,9 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="h-full">
-      <body className={`${inter.variable} font-sans antialiased flex flex-col h-full`}>
+    <html lang="en" className={`${inter.variable} h-full`}> {/* Apply inter.variable to html tag */}
+      {/* Body uses font-sans, which will be configured in tailwind.config.ts to use --font-inter */}
+      <body className="font-sans antialiased flex flex-col h-full">
         {children}
         <Toaster />
       </body>
