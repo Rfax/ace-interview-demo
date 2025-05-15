@@ -1,3 +1,4 @@
+
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -59,6 +60,7 @@ export default function InterviewPage() {
 
   const [isRecording, setIsRecording] = useState(false);
   const speechRecognitionRef = useRef<SpeechRecognition | null>(null);
+  const interimTranscriptRef = useRef<string>(""); // Stores the most recent interim transcript part
 
   const { toast } = useToast();
 
@@ -67,51 +69,76 @@ export default function InterviewPage() {
     defaultValues: { role: "", industry: "" },
   });
 
+  // Effect to initialize SpeechRecognition instance once
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (SpeechRecognitionAPI) {
+      if (SpeechRecognitionAPI && !speechRecognitionRef.current) {
         speechRecognitionRef.current = new SpeechRecognitionAPI();
-        const recognition = speechRecognitionRef.current;
-        recognition.continuous = true; // Keep listening
-        recognition.lang = 'en-US';
-        recognition.interimResults = true; // Get interim results
-
-        recognition.onresult = (event: any) => {
-          let interimTranscript = '';
-          let finalTranscript = '';
-          for (let i = event.resultIndex; i < event.results.length; ++i) {
-            if (event.results[i].isFinal) {
-              finalTranscript += event.results[i][0].transcript;
-            } else {
-              interimTranscript += event.results[i][0].transcript;
-            }
-          }
-          setAnswer(prev => prev.substring(0, prev.length - interimTranscript.length) + finalTranscript + interimTranscript);
-        };
-        
-        recognition.onerror = (event: any) => {
-          console.error("Speech recognition error", event.error);
-          toast({
-            title: "Speech Recognition Error",
-            description: event.error === 'no-speech' ? "No speech detected. Please try again." : "An error occurred during speech recognition.",
-            variant: "destructive",
-          });
-          setIsRecording(false);
-        };
-        recognition.onend = () => {
-          // Only set isRecording to false if it was intentionally stopped or an error occurred.
-          // If continuous is true, it might restart automatically or need manual restart.
-          // For this setup, we'll assume onend means it stopped.
-          if (isRecording) { // Check if it was supposed to be recording
-            setIsRecording(false); 
-          }
-        };
-      } else {
+      } else if (!SpeechRecognitionAPI) {
         console.warn("Speech Recognition API not supported in this browser.");
+        toast({
+          title: "Unsupported Feature",
+          description: "Speech recognition is not available in your browser.",
+          variant: "destructive",
+        });
       }
     }
-  }, [toast, isRecording]);
+  }, [toast]);
+
+  // Effect to configure SpeechRecognition and attach/update event handlers
+  useEffect(() => {
+    if (!speechRecognitionRef.current) return;
+
+    const recognition = speechRecognitionRef.current;
+    recognition.continuous = true;
+    recognition.lang = 'en-US';
+    recognition.interimResults = true;
+
+    recognition.onresult = (event: any) => {
+      let newFinalFromEvent = "";
+      let newInterimFromEvent = "";
+
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        const transcriptSegment = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          newFinalFromEvent += transcriptSegment;
+        } else {
+          newInterimFromEvent += transcriptSegment;
+        }
+      }
+
+      setAnswer(prev => {
+        let baseTranscript = prev;
+        // Remove the previous interim transcript part if it exists at the end of the current answer
+        if (interimTranscriptRef.current && baseTranscript.endsWith(interimTranscriptRef.current)) {
+          baseTranscript = baseTranscript.substring(0, baseTranscript.length - interimTranscriptRef.current.length);
+        }
+        // Append the newly finalized part and the new interim part
+        // The SpeechRecognition API usually handles spacing between segments.
+        return baseTranscript + newFinalFromEvent + newInterimFromEvent;
+      });
+      interimTranscriptRef.current = newInterimFromEvent; // Store the new interim part for the next event
+    };
+    
+    recognition.onerror = (event: any) => {
+      console.error("Speech recognition error", event.error);
+      toast({
+        title: "Speech Recognition Error",
+        description: event.error === 'no-speech' ? "No speech detected. Please try again." : "An error occurred during speech recognition.",
+        variant: "destructive",
+      });
+      if(isRecording) setIsRecording(false); // Ensure state is updated if error occurs during recording
+    };
+
+    recognition.onend = () => {
+      // This handler uses `isRecording` from its closure.
+      // If `isRecording` is true, it means recognition ended unexpectedly (not by user clicking stop).
+      if (isRecording) { 
+        setIsRecording(false); 
+      }
+    };
+  }, [isRecording, toast]); // `isRecording` for onend closure, `toast` for onerror.
 
 
   const startStopwatch = useCallback(() => {
@@ -136,11 +163,16 @@ export default function InterviewPage() {
     setGeneratedQuestion(null);
     setFeedback(null);
     setAnswer("");
+    interimTranscriptRef.current = ""; // Clear interim transcript
+    if (isRecording && speechRecognitionRef.current) { // Stop recording if active
+      speechRecognitionRef.current.stop();
+      setIsRecording(false);
+    }
     try {
       const questionData = await generateInterviewQuestion(values as GenerateInterviewQuestionInput);
       setGeneratedQuestion(questionData);
       setCurrentStep("question_generated");
-      startStopwatch();
+      startStopwatch(); // Start stopwatch after question is generated
     } catch (error) {
       console.error("Error generating question:", error);
       toast({
@@ -157,7 +189,11 @@ export default function InterviewPage() {
     if (!generatedQuestion || !form.getValues().role || !form.getValues().industry) return;
     setIsLoadingFeedback(true);
     setFeedback(null);
-    stopStopwatch();
+    stopStopwatch(); // Stop stopwatch before getting feedback
+    if (isRecording && speechRecognitionRef.current) { // Stop recording if active
+      speechRecognitionRef.current.stop();
+      setIsRecording(false);
+    }
     try {
       const feedbackData = await generateAnswerFeedback({
         question: generatedQuestion.question,
@@ -167,7 +203,8 @@ export default function InterviewPage() {
       } as GenerateAnswerFeedbackInput);
       setFeedback(feedbackData);
       setCurrentStep("feedback_generated");
-    } catch (error) {
+    } catch (error)
+{
       console.error("Error generating feedback:", error);
       toast({
         title: "Error",
@@ -189,13 +226,18 @@ export default function InterviewPage() {
       return;
     }
     if (isRecording) {
-      speechRecognitionRef.current.stop();
+      speechRecognitionRef.current.stop(); // User-initiated stop
       setIsRecording(false);
+      // interimTranscriptRef.current will hold the last interim, which is fine.
+      // It will be cleared if recording starts again.
     } else {
       try {
+        interimTranscriptRef.current = ""; // Reset for the new recording session
         speechRecognitionRef.current.start();
         setIsRecording(true);
-         if (!isStopwatchRunning) startStopwatch(); // Start stopwatch if not already running
+        if (!isStopwatchRunning && currentStep === "question_generated") { // Only start stopwatch if in Q_A step and not already running
+          startStopwatch(); 
+        }
       } catch (e) {
         console.error("Error starting speech recognition:", e);
         toast({
@@ -216,23 +258,27 @@ export default function InterviewPage() {
     setCurrentStep("initial");
     setElapsedTime(0);
     stopStopwatch();
+    interimTranscriptRef.current = "";
     if (isRecording && speechRecognitionRef.current) {
       speechRecognitionRef.current.stop();
       setIsRecording(false);
     }
   };
 
-  // Cleanup stopwatch on unmount
+  // Cleanup effect for component unmount
   useEffect(() => {
     return () => {
       if (stopwatchIntervalRef.current) {
         clearInterval(stopwatchIntervalRef.current);
       }
-      if (speechRecognitionRef.current && isRecording) {
-        speechRecognitionRef.current.stop();
+      // Check speechRecognitionRef.current directly, isRecording might be stale from initial closure
+      if (speechRecognitionRef.current && speechRecognitionRef.current.onend) { // A way to check if it might be active
+         // Potentially stop if it was recording. The `isRecording` state might not be perfectly synced on unmount path.
+         // However, `speechRecognitionRef.current.stop()` is idempotent.
+         speechRecognitionRef.current.stop();
       }
     };
-  }, [isRecording]);
+  }, []); // Empty dependency array for unmount cleanup
 
   return (
     <div className="flex flex-col min-h-screen">
@@ -339,10 +385,15 @@ export default function InterviewPage() {
                   <Textarea
                     placeholder="Type your answer here..."
                     value={answer}
-                    onChange={(e) => setAnswer(e.target.value)}
+                    onChange={(e) => {
+                      if (!isRecording) { // Allow typing only if not recording
+                        setAnswer(e.target.value);
+                      }
+                    }}
                     rows={8}
                     className="text-base leading-relaxed mb-4"
                     aria-label="Your answer"
+                    readOnly={isRecording} // Make textarea readonly while recording
                   />
                   <div className="flex flex-col sm:flex-row gap-4">
                     <Button onClick={toggleRecording} variant={isRecording ? "destructive" : "outline"} className="flex-1 text-base py-3">
