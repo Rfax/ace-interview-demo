@@ -60,7 +60,7 @@ export default function InterviewPage() {
 
   const [isRecording, setIsRecording] = useState(false);
   const speechRecognitionRef = useRef<SpeechRecognition | null>(null);
-  const interimTranscriptRef = useRef<string>(""); // Stores the most recent interim transcript part
+  const textBeforeRecordingRef = useRef<string>(""); // Stores text before current recording session
 
   const { toast } = useToast();
 
@@ -69,7 +69,6 @@ export default function InterviewPage() {
     defaultValues: { role: "", industry: "" },
   });
 
-  // Effect to initialize SpeechRecognition instance once
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -86,7 +85,6 @@ export default function InterviewPage() {
     }
   }, [toast]);
 
-  // Effect to configure SpeechRecognition and attach/update event handlers
   useEffect(() => {
     if (!speechRecognitionRef.current) return;
 
@@ -96,29 +94,44 @@ export default function InterviewPage() {
     recognition.interimResults = true;
 
     recognition.onresult = (event: any) => {
-      let newFinalFromEvent = "";
-      let newInterimFromEvent = "";
+      let currentInterimTranscript = "";
+      let sessionFinalTranscript = "";
 
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
+      // Iterate through all results for the current recognition session
+      for (let i = 0; i < event.results.length; ++i) {
         const transcriptSegment = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
-          newFinalFromEvent += transcriptSegment;
+          sessionFinalTranscript += transcriptSegment + " ";
         } else {
-          newInterimFromEvent += transcriptSegment;
+          currentInterimTranscript = transcriptSegment; // This will be the latest, ongoing interim part
         }
       }
+      sessionFinalTranscript = sessionFinalTranscript.trim(); // Remove trailing space
 
-      setAnswer(prev => {
-        let baseTranscript = prev;
-        // Remove the previous interim transcript part if it exists at the end of the current answer
-        if (interimTranscriptRef.current && baseTranscript.endsWith(interimTranscriptRef.current)) {
-          baseTranscript = baseTranscript.substring(0, baseTranscript.length - interimTranscriptRef.current.length);
+      let spokenPart = sessionFinalTranscript;
+      if (currentInterimTranscript) {
+        if (spokenPart) { // If there was final text in this session
+          spokenPart += " ";
         }
-        // Append the newly finalized part and the new interim part
-        // The SpeechRecognition API usually handles spacing between segments.
-        return baseTranscript + newFinalFromEvent + newInterimFromEvent;
-      });
-      interimTranscriptRef.current = newInterimFromEvent; // Store the new interim part for the next event
+        spokenPart += currentInterimTranscript;
+      }
+      
+      const prefix = textBeforeRecordingRef.current;
+      let newAnswer;
+
+      if (!prefix) {
+        newAnswer = spokenPart;
+      } else if (!spokenPart) {
+        newAnswer = prefix;
+      } else {
+        // Ensure single space between prefix and new spoken part
+        if (prefix.endsWith(" ")) {
+          newAnswer = prefix + spokenPart;
+        } else {
+          newAnswer = prefix + " " + spokenPart;
+        }
+      }
+      setAnswer(newAnswer);
     };
     
     recognition.onerror = (event: any) => {
@@ -128,17 +141,15 @@ export default function InterviewPage() {
         description: event.error === 'no-speech' ? "No speech detected. Please try again." : "An error occurred during speech recognition.",
         variant: "destructive",
       });
-      if(isRecording) setIsRecording(false); // Ensure state is updated if error occurs during recording
+      if(isRecording) setIsRecording(false);
     };
 
     recognition.onend = () => {
-      // This handler uses `isRecording` from its closure.
-      // If `isRecording` is true, it means recognition ended unexpectedly (not by user clicking stop).
       if (isRecording) { 
         setIsRecording(false); 
       }
     };
-  }, [isRecording, toast]); // `isRecording` for onend closure, `toast` for onerror.
+  }, [isRecording, toast]);
 
 
   const startStopwatch = useCallback(() => {
@@ -163,8 +174,8 @@ export default function InterviewPage() {
     setGeneratedQuestion(null);
     setFeedback(null);
     setAnswer("");
-    interimTranscriptRef.current = ""; // Clear interim transcript
-    if (isRecording && speechRecognitionRef.current) { // Stop recording if active
+    textBeforeRecordingRef.current = ""; 
+    if (isRecording && speechRecognitionRef.current) {
       speechRecognitionRef.current.stop();
       setIsRecording(false);
     }
@@ -172,7 +183,7 @@ export default function InterviewPage() {
       const questionData = await generateInterviewQuestion(values as GenerateInterviewQuestionInput);
       setGeneratedQuestion(questionData);
       setCurrentStep("question_generated");
-      startStopwatch(); // Start stopwatch after question is generated
+      startStopwatch();
     } catch (error) {
       console.error("Error generating question:", error);
       toast({
@@ -189,8 +200,8 @@ export default function InterviewPage() {
     if (!generatedQuestion || !form.getValues().role || !form.getValues().industry) return;
     setIsLoadingFeedback(true);
     setFeedback(null);
-    stopStopwatch(); // Stop stopwatch before getting feedback
-    if (isRecording && speechRecognitionRef.current) { // Stop recording if active
+    stopStopwatch();
+    if (isRecording && speechRecognitionRef.current) {
       speechRecognitionRef.current.stop();
       setIsRecording(false);
     }
@@ -226,16 +237,14 @@ export default function InterviewPage() {
       return;
     }
     if (isRecording) {
-      speechRecognitionRef.current.stop(); // User-initiated stop
+      speechRecognitionRef.current.stop(); 
       setIsRecording(false);
-      // interimTranscriptRef.current will hold the last interim, which is fine.
-      // It will be cleared if recording starts again.
     } else {
       try {
-        interimTranscriptRef.current = ""; // Reset for the new recording session
+        textBeforeRecordingRef.current = answer; // Capture current text before starting new session
         speechRecognitionRef.current.start();
         setIsRecording(true);
-        if (!isStopwatchRunning && currentStep === "question_generated") { // Only start stopwatch if in Q_A step and not already running
+        if (!isStopwatchRunning && currentStep === "question_generated") {
           startStopwatch(); 
         }
       } catch (e) {
@@ -258,27 +267,23 @@ export default function InterviewPage() {
     setCurrentStep("initial");
     setElapsedTime(0);
     stopStopwatch();
-    interimTranscriptRef.current = "";
+    textBeforeRecordingRef.current = "";
     if (isRecording && speechRecognitionRef.current) {
       speechRecognitionRef.current.stop();
       setIsRecording(false);
     }
   };
 
-  // Cleanup effect for component unmount
   useEffect(() => {
     return () => {
       if (stopwatchIntervalRef.current) {
         clearInterval(stopwatchIntervalRef.current);
       }
-      // Check speechRecognitionRef.current directly, isRecording might be stale from initial closure
-      if (speechRecognitionRef.current && speechRecognitionRef.current.onend) { // A way to check if it might be active
-         // Potentially stop if it was recording. The `isRecording` state might not be perfectly synced on unmount path.
-         // However, `speechRecognitionRef.current.stop()` is idempotent.
+      if (speechRecognitionRef.current && speechRecognitionRef.current.onend) {
          speechRecognitionRef.current.stop();
       }
     };
-  }, []); // Empty dependency array for unmount cleanup
+  }, []);
 
   return (
     <div className="flex flex-col min-h-screen">
@@ -386,14 +391,14 @@ export default function InterviewPage() {
                     placeholder="Type your answer here..."
                     value={answer}
                     onChange={(e) => {
-                      if (!isRecording) { // Allow typing only if not recording
+                      if (!isRecording) { 
                         setAnswer(e.target.value);
                       }
                     }}
                     rows={8}
                     className="text-base leading-relaxed mb-4"
                     aria-label="Your answer"
-                    readOnly={isRecording} // Make textarea readonly while recording
+                    readOnly={isRecording} 
                   />
                   <div className="flex flex-col sm:flex-row gap-4">
                     <Button onClick={toggleRecording} variant={isRecording ? "destructive" : "outline"} className="flex-1 text-base py-3">
@@ -484,3 +489,4 @@ export default function InterviewPage() {
     </div>
   );
 }
+
