@@ -14,9 +14,10 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { AppLogo } from "@/components/icons";
-import { Briefcase, Building2, Mic, Send, RefreshCw, Loader2, CheckCircle, Info, Lightbulb, MessageSquare, ThumbsUp, Brain, Target, ThumbsDown, Check, Star, TrendingUp } from "lucide-react";
+import { Briefcase, Building2, Mic, Send, RefreshCw, Loader2, CheckCircle, Info, Lightbulb, MessageSquare, ThumbsUp, Brain, Target, ThumbsDown, Check, TrendingUp } from "lucide-react";
 import { formatTime, cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -55,7 +56,7 @@ const formSchema = z.object({
   customRole: z.string().optional(),
   industrySelection: z.string({ required_error: "Please select an industry or choose 'Other'."}).min(1, "Please select an industry or choose 'Other'."),
   customIndustry: z.string().optional(),
-  focusSelection: z.string({ required_error: "Please select an interview focus or choose 'Other'."}).min(1, "Please select an interview focus or choose 'Other'."),
+  focusSelections: z.array(z.string()).min(1, "Please select at least one interview focus area."),
   customFocus: z.string().optional(),
 }).superRefine((data, ctx) => {
   if (data.roleSelection === OTHER_VALUE && (!data.customRole || data.customRole.trim().length < 2)) {
@@ -72,12 +73,15 @@ const formSchema = z.object({
       path: ["customIndustry"],
     });
   }
-  if (data.focusSelection === OTHER_VALUE && (!data.customFocus || data.customFocus.trim().length < 2)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "Focus must be at least 2 characters.",
-      path: ["customFocus"],
-    });
+  // Validation for customFocus when "Other" is selected in focusSelections
+  if (data.focusSelections.includes(OTHER_VALUE)) {
+    if (!data.customFocus || data.customFocus.trim().length < 2) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Custom focus must be at least 2 characters when 'Other' is selected.",
+        path: ["customFocus"],
+      });
+    }
   }
 });
 
@@ -133,7 +137,7 @@ const renderFeedbackIcon = (
     case 'relevance':
       IconComponent = Target;
       break;
-    default: // Should not happen with defined types
+    default:
       IconComponent = CheckCircle; 
   }
   return <IconComponent className={`mr-2 h-5 w-5 ${color}`} />;
@@ -143,7 +147,7 @@ const renderFeedbackIcon = (
 export default function InterviewPage() {
   const [currentStep, setCurrentStep] = useState<CurrentStep>("initial");
   const [generatedQuestion, setGeneratedQuestion] = useState<GenerateInterviewQuestionOutput | null>(null);
-  const [currentQuestionParams, setCurrentQuestionParams] = useState<GenerateInterviewQuestionInput | null>(null);
+  const [currentQuestionParams, setCurrentQuestionParams] = useState<Omit<GenerateInterviewQuestionInput, 'interviewFocus'> & { interviewFocus: string[] } | null>(null);
   const [answer, setAnswer] = useState("");
   const [feedback, setFeedback] = useState<GenerateAnswerFeedbackOutput | null>(null);
   const [isLoadingQuestion, setIsLoadingQuestion] = useState(false);
@@ -156,7 +160,6 @@ export default function InterviewPage() {
   const [isRecording, setIsRecording] = useState(false);
   const speechRecognitionRef = useRef<SpeechRecognition | null>(null);
   const textBeforeRecordingRef = useRef<string>("");
-  const lastInterimRef = useRef<string>("");
   
   const { toast } = useToast();
 
@@ -167,14 +170,14 @@ export default function InterviewPage() {
       customRole: "", 
       industrySelection: "", 
       customIndustry: "",
-      focusSelection: "",
+      focusSelections: [],
       customFocus: ""
     },
   });
 
   const watchedRoleSelection = form.watch("roleSelection");
   const watchedIndustrySelection = form.watch("industrySelection");
-  const watchedFocusSelection = form.watch("focusSelection");
+  const watchedFocusSelections = form.watch("focusSelections");
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -186,46 +189,19 @@ export default function InterviewPage() {
         recognitionInstance.interimResults = true;
 
         recognitionInstance.onresult = (event: any) => {
-          let interimTranscript = '';
-          let finalTranscript = '';
-        
-          for (let i = event.resultIndex; i < event.results.length; ++i) {
-            if (event.results[i].isFinal) {
-              finalTranscript += event.results[i][0].transcript + ' ';
-            } else {
-              interimTranscript += event.results[i][0].transcript;
-            }
+          let fullTranscriptThisSession = "";
+          for (let i = 0; i < event.results.length; ++i) {
+            fullTranscriptThisSession += event.results[i][0].transcript + (event.results[i].isFinal ? ' ' : '');
           }
         
-          // Use the text captured before recording started as the base
-          let currentAnswer = textBeforeRecordingRef.current;
-        
-          // Append finalized transcript
-          if (finalTranscript.trim()) {
-            if (currentAnswer && !currentAnswer.endsWith(' ')) {
-              currentAnswer += ' ';
-            }
-            currentAnswer += finalTranscript.trim();
-            textBeforeRecordingRef.current = currentAnswer; // Update base for next final result
-            lastInterimRef.current = ""; // Reset interim since we got a final
+          let newAnswer = textBeforeRecordingRef.current;
+          if (newAnswer && !newAnswer.endsWith(' ') && fullTranscriptThisSession) {
+            newAnswer += ' ';
           }
-        
-          // Handle interim transcript - show current interim results appended to the most recent final text
-          // This replaces the last interim result rather than appending, to avoid duplication.
-          if (interimTranscript.trim()) {
-            let textToShow = textBeforeRecordingRef.current; // Start with everything finalized so far
-            if (textToShow && !textToShow.endsWith(' ')) {
-                textToShow += ' ';
-            }
-            textToShow += interimTranscript.trim();
-            setAnswer(textToShow);
-            lastInterimRef.current = interimTranscript.trim(); // Store current interim
-          } else if (finalTranscript.trim()) {
-            // If there was a final transcript but no new interim, just show the updated final
-            setAnswer(currentAnswer);
-          }
+          newAnswer += fullTranscriptThisSession.trim();
+          setAnswer(newAnswer);
         };
-                
+                        
         recognitionInstance.onerror = (event: any) => {
           console.error("Speech recognition error", event.error);
           toast({
@@ -233,25 +209,16 @@ export default function InterviewPage() {
             description: event.error === 'no-speech' ? "No speech detected. Please try again." : event.error === 'audio-capture' ? "Audio capture failed. Check microphone." : "An error occurred during speech recognition.",
             variant: "destructive",
           });
-          if(isRecording) setIsRecording(false);
+          if(isRecording) setIsRecording(false); // Ensure isRecording is reset
         };
     
         recognitionInstance.onend = () => {
-          // Ensure the final state of the answer reflects the last known text.
-          // textBeforeRecordingRef should have the most up-to-date fully finalized text.
-          // If there was an unfinalized interim text, append it.
-          let finalAnswer = textBeforeRecordingRef.current;
-          if (lastInterimRef.current) {
-            if (finalAnswer && !finalAnswer.endsWith(' ')) finalAnswer += ' ';
-            finalAnswer += lastInterimRef.current;
-          }
-          setAnswer(finalAnswer);
-          textBeforeRecordingRef.current = finalAnswer; // Update for potential next recording session
-          lastInterimRef.current = ""; // Clear last interim
-
-          if (isRecording) {
-             setIsRecording(false);
-          }
+            // The onresult should have set the final answer.
+            // We only set isRecording to false here.
+            // The textBeforeRecordingRef is updated *before* starting a new recording.
+            if (isRecording) { // Check if it was recording before stopping
+                setIsRecording(false);
+            }
         };
         speechRecognitionRef.current = recognitionInstance;
       } else if (!SpeechRecognitionAPI) {
@@ -259,7 +226,7 @@ export default function InterviewPage() {
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [toast]); // isRecording removed
+  }, [toast]); // isRecording removed, as it was causing re-initialization
 
   const startStopwatch = useCallback(() => {
     if (stopwatchIntervalRef.current) clearInterval(stopwatchIntervalRef.current);
@@ -284,15 +251,31 @@ export default function InterviewPage() {
     setFeedback(null);
     setAnswer("");
     textBeforeRecordingRef.current = ""; 
-    lastInterimRef.current = "";
     if (isRecording && speechRecognitionRef.current) {
       speechRecognitionRef.current.stop(); 
+      setIsRecording(false); // Explicitly set recording to false
     }
 
+    const role = values.roleSelection === OTHER_VALUE ? values.customRole! : values.roleSelection;
+    const industry = values.industrySelection === OTHER_VALUE ? values.customIndustry! : values.industrySelection;
+    
+    let actualFocuses: string[] = values.focusSelections.filter(focus => focus !== OTHER_VALUE);
+    if (values.focusSelections.includes(OTHER_VALUE) && values.customFocus && values.customFocus.trim().length > 0) {
+      actualFocuses.push(values.customFocus.trim());
+    }
+    // Ensure there's at least one focus if the array is empty after filtering (e.g. only "other" was selected but no custom text)
+    // This should be caught by validation, but as a fallback:
+    if (actualFocuses.length === 0 && values.focusSelections.length > 0) { 
+        toast({ title: "Focus Error", description: "Please specify your 'Other' focus area.", variant: "destructive"});
+        setIsLoadingQuestion(false);
+        return;
+    }
+
+
     const questionPayload: GenerateInterviewQuestionInput = {
-      role: values.roleSelection === OTHER_VALUE ? values.customRole! : values.roleSelection,
-      industry: values.industrySelection === OTHER_VALUE ? values.customIndustry! : values.industrySelection,
-      interviewFocus: values.focusSelection === OTHER_VALUE ? values.customFocus! : values.focusSelection,
+      role,
+      industry,
+      interviewFocus: actualFocuses,
     };
     setCurrentQuestionParams(questionPayload);
 
@@ -320,6 +303,7 @@ export default function InterviewPage() {
     stopStopwatch();
     if (isRecording && speechRecognitionRef.current) {
       speechRecognitionRef.current.stop();
+      setIsRecording(false); // Explicitly set recording to false
     }
     try {
       const feedbackData = await generateAnswerFeedback({
@@ -327,7 +311,7 @@ export default function InterviewPage() {
         answer,
         role: currentQuestionParams.role,
         industry: currentQuestionParams.industry,
-      } as GenerateAnswerFeedbackInput); // Assuming feedback flow doesn't need interviewFocus yet. Add if it does.
+      } as GenerateAnswerFeedbackInput);
       setFeedback(feedbackData);
       setCurrentStep("feedback_generated");
     } catch (error) {
@@ -353,10 +337,10 @@ export default function InterviewPage() {
     }
     if (isRecording) {
       speechRecognitionRef.current.stop(); 
+      // isRecording will be set to false by the onend handler
     } else {
       try {
-        textBeforeRecordingRef.current = answer;
-        lastInterimRef.current = ""; // Reset last interim on new recording start
+        textBeforeRecordingRef.current = answer; // Capture text before new recording starts
         speechRecognitionRef.current.start();
         setIsRecording(true);
         if (!isStopwatchRunning && currentStep === "question_generated") {
@@ -373,7 +357,7 @@ export default function InterviewPage() {
             description: description,
             variant: "destructive",
         });
-        setIsRecording(false);
+        setIsRecording(false); // Ensure isRecording is reset on error
       }
     }
   };
@@ -384,7 +368,7 @@ export default function InterviewPage() {
       customRole: "", 
       industrySelection: "", 
       customIndustry: "",
-      focusSelection: "",
+      focusSelections: [],
       customFocus: ""
     });
     setGeneratedQuestion(null);
@@ -395,9 +379,9 @@ export default function InterviewPage() {
     setElapsedTime(0);
     stopStopwatch();
     textBeforeRecordingRef.current = "";
-    lastInterimRef.current = "";
     if (isRecording && speechRecognitionRef.current) {
       speechRecognitionRef.current.stop();
+      setIsRecording(false); // Explicitly set recording to false
     }
   };
 
@@ -407,25 +391,30 @@ export default function InterviewPage() {
         clearInterval(stopwatchIntervalRef.current);
       }
       if (speechRecognitionRef.current) {
-         if(isRecording) speechRecognitionRef.current.stop();
+         // Check if it's recording before trying to stop, to avoid errors if already stopped
+         if(speechRecognitionRef.current && typeof (speechRecognitionRef.current as any).readyState !== 'undefined' && (speechRecognitionRef.current as any).readyState === 1){ // Some browsers might not have readyState
+            try {
+                speechRecognitionRef.current.stop();
+            } catch (e) {
+                // console.warn("Error stopping speech recognition on cleanup:", e);
+            }
+         }
          speechRecognitionRef.current.onresult = null;
          speechRecognitionRef.current.onerror = null;
          speechRecognitionRef.current.onend = null;
       }
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isRecording]);
+  }, []);
 
 
   const renderRadioOptions = (
     field: any, 
     options: {value: string, label: string}[], 
-    currentSelection: string | undefined,
     fieldIdPrefix: string
   ) => (
     <RadioGroup
       onValueChange={field.onChange}
-      value={field.value} // Use field.value for controlled component
+      value={field.value}
       className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3"
     >
       {options.map((option) => (
@@ -436,11 +425,12 @@ export default function InterviewPage() {
           <Label
             htmlFor={`${fieldIdPrefix}-${option.value}`}
             className={cn(
-              "flex items-center justify-center rounded-md border-2 border-muted bg-popover p-4 hover:bg-accent hover:text-accent-foreground cursor-pointer font-medium",
+              "flex items-center justify-center rounded-md border-2 border-muted bg-popover p-4 cursor-pointer font-medium",
               "transition-all duration-150 ease-in-out",
+              "hover:border-primary hover:bg-primary/10 hover:text-primary hover:ring-2 hover:ring-primary",
               field.value === option.value
                 ? "border-primary bg-primary/10 text-primary ring-2 ring-primary"
-                : "hover:border-muted-foreground/50"
+                : "border-muted" 
             )}
           >
             {field.value === option.value && <Check className="mr-2 h-5 w-5 text-primary" />}
@@ -455,11 +445,12 @@ export default function InterviewPage() {
         <Label
           htmlFor={`${fieldIdPrefix}-${OTHER_VALUE}`}
           className={cn(
-            "flex items-center justify-center rounded-md border-2 border-muted bg-popover p-4 hover:bg-accent hover:text-accent-foreground cursor-pointer font-medium",
+            "flex items-center justify-center rounded-md border-2 bg-popover p-4 cursor-pointer font-medium",
             "transition-all duration-150 ease-in-out",
+            "hover:border-primary hover:bg-primary/10 hover:text-primary hover:ring-2 hover:ring-primary",
             field.value === OTHER_VALUE
               ? "border-primary bg-primary/10 text-primary ring-2 ring-primary"
-              : "hover:border-muted-foreground/50"
+              : "border-muted"
           )}
         >
           {field.value === OTHER_VALUE && <Check className="mr-2 h-5 w-5 text-primary" />}
@@ -467,6 +458,75 @@ export default function InterviewPage() {
         </Label>
       </FormItem>
     </RadioGroup>
+  );
+
+  const renderCheckboxOptions = (
+    field: any, // ControllerRenderProps from react-hook-form for an array field
+    options: {value: string, label: string}[],
+    fieldIdPrefix: string
+  ) => (
+    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+      {options.map((option) => (
+        <FormItem key={option.value} className="flex items-center space-x-0">
+          <FormControl>
+            <Checkbox
+              id={`${fieldIdPrefix}-${option.value}`}
+              checked={field.value?.includes(option.value)}
+              onCheckedChange={(checked) => {
+                const currentValue = field.value || [];
+                return checked
+                  ? field.onChange([...currentValue, option.value])
+                  : field.onChange(currentValue?.filter((v: string) => v !== option.value));
+              }}
+              className="sr-only"
+            />
+          </FormControl>
+          <Label
+            htmlFor={`${fieldIdPrefix}-${option.value}`}
+            className={cn(
+              "flex w-full items-center justify-center rounded-md border-2 border-muted bg-popover p-4 cursor-pointer font-medium",
+              "transition-all duration-150 ease-in-out",
+              "hover:border-primary hover:bg-primary/10 hover:text-primary hover:ring-2 hover:ring-primary",
+              field.value?.includes(option.value)
+                ? "border-primary bg-primary/10 text-primary ring-2 ring-primary"
+                : "border-muted"
+            )}
+          >
+            {field.value?.includes(option.value) && <Check className="mr-2 h-5 w-5 text-primary" />}
+            {option.label}
+          </Label>
+        </FormItem>
+      ))}
+      <FormItem className="flex items-center space-x-0">
+        <FormControl>
+          <Checkbox
+            id={`${fieldIdPrefix}-${OTHER_VALUE}`}
+            checked={field.value?.includes(OTHER_VALUE)}
+            onCheckedChange={(checked) => {
+              const currentValue = field.value || [];
+              return checked
+                ? field.onChange([...currentValue, OTHER_VALUE])
+                : field.onChange(currentValue?.filter((v: string) => v !== OTHER_VALUE));
+            }}
+            className="sr-only"
+          />
+        </FormControl>
+        <Label
+          htmlFor={`${fieldIdPrefix}-${OTHER_VALUE}`}
+          className={cn(
+            "flex w-full items-center justify-center rounded-md border-2 bg-popover p-4 cursor-pointer font-medium",
+            "transition-all duration-150 ease-in-out",
+            "hover:border-primary hover:bg-primary/10 hover:text-primary hover:ring-2 hover:ring-primary",
+            field.value?.includes(OTHER_VALUE)
+              ? "border-primary bg-primary/10 text-primary ring-2 ring-primary"
+              : "border-muted"
+          )}
+        >
+          {field.value?.includes(OTHER_VALUE) && <Check className="mr-2 h-5 w-5 text-primary" />}
+          Other
+        </Label>
+      </FormItem>
+    </div>
   );
 
 
@@ -503,7 +563,7 @@ export default function InterviewPage() {
                           <FormLabel className="text-lg flex items-center"><Briefcase className="mr-2 h-5 w-5 text-muted-foreground" /> Your Desired Role</FormLabel>
                           <FormControl>
                             <>
-                              {renderRadioOptions(field, ROLES, watchedRoleSelection, "role")}
+                              {renderRadioOptions(field, ROLES, "role")}
                             </>
                           </FormControl>
                           <FormMessage />
@@ -535,7 +595,7 @@ export default function InterviewPage() {
                           <FormLabel className="text-lg flex items-center"><Building2 className="mr-2 h-5 w-5 text-muted-foreground" /> Target Industry</FormLabel>
                           <FormControl>
                              <>
-                              {renderRadioOptions(field, INDUSTRIES, watchedIndustrySelection, "industry")}
+                              {renderRadioOptions(field, INDUSTRIES, "industry")}
                             </>
                           </FormControl>
                           <FormMessage />
@@ -561,27 +621,27 @@ export default function InterviewPage() {
                     {/* Interview Focus Selection */}
                     <FormField
                       control={form.control}
-                      name="focusSelection"
+                      name="focusSelections"
                       render={({ field }) => (
                         <FormItem className="space-y-3">
-                          <FormLabel className="text-lg flex items-center"><TrendingUp className="mr-2 h-5 w-5 text-muted-foreground" /> Interview Focus</FormLabel>
+                          <FormLabel className="text-lg flex items-center"><TrendingUp className="mr-2 h-5 w-5 text-muted-foreground" /> Interview Focus (select all that apply)</FormLabel>
                           <FormControl>
                             <>
-                              {renderRadioOptions(field, FOCUS_AREAS, watchedFocusSelection, "focus")}
+                              {renderCheckboxOptions(field, FOCUS_AREAS, "focus")}
                             </>
                           </FormControl>
-                           <FormDescription>Select the primary area the interview question should target.</FormDescription>
+                           <FormDescription>Select the primary area(s) the interview question should target.</FormDescription>
                           <FormMessage />
                         </FormItem>
                       )}
                     />
-                    {watchedFocusSelection === OTHER_VALUE && (
+                    {watchedFocusSelections?.includes(OTHER_VALUE) && (
                       <FormField
                         control={form.control}
                         name="customFocus"
                         render={({ field }) => (
                           <FormItem className="animate-in fade-in-0 duration-300">
-                            <FormLabel className="text-base">Specify Focus</FormLabel>
+                            <FormLabel className="text-base">Specify Other Focus Area</FormLabel>
                             <FormControl>
                               <Input placeholder="e.g., System Design" {...field} className="text-base" />
                             </FormControl>
@@ -628,7 +688,7 @@ export default function InterviewPage() {
                     <CardDescription className="text-sm">
                       For Role: <span className="font-semibold text-primary">{currentQuestionParams.role}</span> <br/>
                       In Industry: <span className="font-semibold text-primary">{currentQuestionParams.industry}</span> <br/>
-                      Focusing on: <span className="font-semibold text-primary">{currentQuestionParams.interviewFocus}</span>
+                      Focusing on: <span className="font-semibold text-primary">{currentQuestionParams.interviewFocus.join(', ')}</span>
                     </CardDescription>
                   )}
                 </CardHeader>
@@ -701,7 +761,7 @@ export default function InterviewPage() {
                 <Accordion type="single" collapsible defaultValue="item-1" className="w-full">
                   <AccordionItem value="item-1">
                     <AccordionTrigger className="text-xl hover:no-underline">
-                       {renderFeedbackIcon(feedback.overallFeedback?.score, 'overall')}
+                      {renderFeedbackIcon(feedback.overallFeedback?.score, 'overall')}
                       Overall Feedback
                     </AccordionTrigger>
                     <AccordionContent className="text-base leading-relaxed p-1">
@@ -755,3 +815,4 @@ export default function InterviewPage() {
     </div>
   );
 }
+
