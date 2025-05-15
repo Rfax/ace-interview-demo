@@ -61,7 +61,7 @@ export default function InterviewPage() {
   const [isRecording, setIsRecording] = useState(false);
   const speechRecognitionRef = useRef<SpeechRecognition | null>(null);
   const textBeforeRecordingRef = useRef<string>(""); // Stores text before current recording session
-
+  
   const { toast } = useToast();
 
   const form = useForm<z.infer<typeof roleIndustrySchema>>({
@@ -74,6 +74,9 @@ export default function InterviewPage() {
       const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (SpeechRecognitionAPI && !speechRecognitionRef.current) {
         speechRecognitionRef.current = new SpeechRecognitionAPI();
+        speechRecognitionRef.current.continuous = true;
+        speechRecognitionRef.current.lang = 'en-US';
+        speechRecognitionRef.current.interimResults = true;
       } else if (!SpeechRecognitionAPI) {
         console.warn("Speech Recognition API not supported in this browser.");
         toast({
@@ -89,49 +92,35 @@ export default function InterviewPage() {
     if (!speechRecognitionRef.current) return;
 
     const recognition = speechRecognitionRef.current;
-    recognition.continuous = true;
-    recognition.lang = 'en-US';
-    recognition.interimResults = true;
 
     recognition.onresult = (event: any) => {
-      let currentInterimTranscript = "";
       let sessionFinalTranscript = "";
+      let currentInterimTranscript = "";
 
-      // Iterate through all results for the current recognition session
       for (let i = 0; i < event.results.length; ++i) {
         const transcriptSegment = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
           sessionFinalTranscript += transcriptSegment + " ";
         } else {
-          currentInterimTranscript = transcriptSegment; // This will be the latest, ongoing interim part
+          currentInterimTranscript = transcriptSegment; // Keep updating with the latest interim
         }
       }
-      sessionFinalTranscript = sessionFinalTranscript.trim(); // Remove trailing space
-
-      let spokenPart = sessionFinalTranscript;
-      if (currentInterimTranscript) {
-        if (spokenPart) { // If there was final text in this session
-          spokenPart += " ";
-        }
-        spokenPart += currentInterimTranscript;
-      }
+      sessionFinalTranscript = sessionFinalTranscript.trim();
       
-      const prefix = textBeforeRecordingRef.current;
-      let newAnswer;
-
-      if (!prefix) {
-        newAnswer = spokenPart;
-      } else if (!spokenPart) {
-        newAnswer = prefix;
-      } else {
-        // Ensure single space between prefix and new spoken part
-        if (prefix.endsWith(" ")) {
-          newAnswer = prefix + spokenPart;
-        } else {
-          newAnswer = prefix + " " + spokenPart;
-        }
+      let newSpokenText = sessionFinalTranscript;
+      if (currentInterimTranscript) {
+        if (newSpokenText) newSpokenText += " ";
+        newSpokenText += currentInterimTranscript;
       }
-      setAnswer(newAnswer);
+
+      let combinedAnswer = textBeforeRecordingRef.current;
+      if (newSpokenText) {
+        if (combinedAnswer && !combinedAnswer.endsWith(" ")) {
+          combinedAnswer += " ";
+        }
+        combinedAnswer += newSpokenText;
+      }
+      setAnswer(combinedAnswer);
     };
     
     recognition.onerror = (event: any) => {
@@ -141,15 +130,17 @@ export default function InterviewPage() {
         description: event.error === 'no-speech' ? "No speech detected. Please try again." : "An error occurred during speech recognition.",
         variant: "destructive",
       });
-      if(isRecording) setIsRecording(false);
+      if(isRecording) setIsRecording(false); // Ensure recording state is reset
     };
 
     recognition.onend = () => {
+      // This onend can be triggered by .stop() or naturally.
+      // We only want to set isRecording to false if it was programmatically stopped OR if it's still true.
       if (isRecording) { 
         setIsRecording(false); 
       }
     };
-  }, [isRecording, toast]);
+  }, [isRecording, toast]); // isRecording dependency is important here if onend behavior relies on it
 
 
   const startStopwatch = useCallback(() => {
@@ -176,8 +167,7 @@ export default function InterviewPage() {
     setAnswer("");
     textBeforeRecordingRef.current = ""; 
     if (isRecording && speechRecognitionRef.current) {
-      speechRecognitionRef.current.stop();
-      setIsRecording(false);
+      speechRecognitionRef.current.stop(); // This will trigger onend, which sets isRecording to false.
     }
     try {
       const questionData = await generateInterviewQuestion(values as GenerateInterviewQuestionInput);
@@ -202,8 +192,7 @@ export default function InterviewPage() {
     setFeedback(null);
     stopStopwatch();
     if (isRecording && speechRecognitionRef.current) {
-      speechRecognitionRef.current.stop();
-      setIsRecording(false);
+      speechRecognitionRef.current.stop(); // This will trigger onend, which sets isRecording to false.
     }
     try {
       const feedbackData = await generateAnswerFeedback({
@@ -238,23 +227,29 @@ export default function InterviewPage() {
     }
     if (isRecording) {
       speechRecognitionRef.current.stop(); 
-      setIsRecording(false);
+      // onend will set isRecording to false
     } else {
       try {
-        textBeforeRecordingRef.current = answer; // Capture current text before starting new session
+        // Capture text just before starting a new recording session.
+        // This ensures that if the user types then records, the typed text is preserved.
+        textBeforeRecordingRef.current = answer; 
         speechRecognitionRef.current.start();
         setIsRecording(true);
         if (!isStopwatchRunning && currentStep === "question_generated") {
           startStopwatch(); 
         }
-      } catch (e) {
+      } catch (e: any) {
         console.error("Error starting speech recognition:", e);
+        let description = "Could not start speech recognition. Please check microphone permissions.";
+        if (e.name === 'InvalidStateError') {
+          description = "Speech recognition is already active or in an invalid state. Please wait or refresh.";
+        }
         toast({
             title: "Speech Recognition Error",
-            description: "Could not start speech recognition. Please check microphone permissions.",
+            description: description,
             variant: "destructive",
         });
-        setIsRecording(false);
+        setIsRecording(false); // Ensure state is reset if start fails
       }
     }
   };
@@ -270,20 +265,28 @@ export default function InterviewPage() {
     textBeforeRecordingRef.current = "";
     if (isRecording && speechRecognitionRef.current) {
       speechRecognitionRef.current.stop();
-      setIsRecording(false);
     }
+    // isRecording will be set to false by the onend handler
   };
 
   useEffect(() => {
+    // Cleanup function
     return () => {
       if (stopwatchIntervalRef.current) {
         clearInterval(stopwatchIntervalRef.current);
       }
-      if (speechRecognitionRef.current && speechRecognitionRef.current.onend) {
+      // Stop recognition if active and component unmounts
+      if (speechRecognitionRef.current && isRecording) {
          speechRecognitionRef.current.stop();
       }
+      // Nullify handlers to prevent calls on unmounted component, though usually not needed with modern React
+      if (speechRecognitionRef.current) {
+        speechRecognitionRef.current.onresult = null;
+        speechRecognitionRef.current.onerror = null;
+        speechRecognitionRef.current.onend = null;
+      }
     };
-  }, []);
+  }, [isRecording]); // Add isRecording to dependencies to ensure cleanup is correct if it changes
 
   return (
     <div className="flex flex-col min-h-screen">
@@ -391,8 +394,11 @@ export default function InterviewPage() {
                     placeholder="Type your answer here..."
                     value={answer}
                     onChange={(e) => {
+                      // Allow typing only if not currently recording
                       if (!isRecording) { 
                         setAnswer(e.target.value);
+                        // If user types, this becomes the new baseline for subsequent recordings
+                        textBeforeRecordingRef.current = e.target.value;
                       }
                     }}
                     rows={8}
@@ -439,7 +445,7 @@ export default function InterviewPage() {
                 <Accordion type="single" collapsible defaultValue="item-1" className="w-full">
                   <AccordionItem value="item-1">
                     <AccordionTrigger className="text-xl hover:no-underline">
-                      <ThumbsUp className="mr-2 h-5 w-5 text-accent" /> Overall Feedback
+                      <ThumbsUp className="mr-2 h-5 w-5 text-green-600" /> Overall Feedback
                     </AccordionTrigger>
                     <AccordionContent className="text-base leading-relaxed p-1">
                       {feedback.feedback}
@@ -447,7 +453,7 @@ export default function InterviewPage() {
                   </AccordionItem>
                   <AccordionItem value="item-2">
                     <AccordionTrigger className="text-xl hover:no-underline">
-                       <Brain className="mr-2 h-5 w-5 text-primary" /> Clarity
+                       <Brain className="mr-2 h-5 w-5 text-yellow-500" /> Clarity
                     </AccordionTrigger>
                     <AccordionContent className="text-base leading-relaxed p-1">
                        {feedback.clarity}
@@ -455,7 +461,7 @@ export default function InterviewPage() {
                   </AccordionItem>
                   <AccordionItem value="item-3">
                     <AccordionTrigger className="text-xl hover:no-underline">
-                       <Info className="mr-2 h-5 w-5 text-primary" /> Completeness
+                       <Info className="mr-2 h-5 w-5 text-orange-500" /> Completeness
                     </AccordionTrigger>
                     <AccordionContent className="text-base leading-relaxed p-1">
                        {feedback.completeness}
@@ -463,7 +469,7 @@ export default function InterviewPage() {
                   </AccordionItem>
                   <AccordionItem value="item-4">
                     <AccordionTrigger className="text-xl hover:no-underline">
-                       <Target className="mr-2 h-5 w-5 text-primary" /> Relevance
+                       <Target className="mr-2 h-5 w-5 text-lime-500" /> Relevance
                     </AccordionTrigger>
                     <AccordionContent className="text-base leading-relaxed p-1">
                        {feedback.relevance}
