@@ -13,9 +13,9 @@ import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, For
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+// import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"; // No longer used
 import { AppLogo } from "@/components/icons";
-import { Briefcase, Building2, Mic, Send, RefreshCw, Loader2, CheckCircle, Info, Lightbulb, MessageSquare, ThumbsUp, Brain, Target } from "lucide-react";
+import { Briefcase, Building2, Mic, Send, RefreshCw, Loader2, CheckCircle, Info, Lightbulb, MessageSquare, ThumbsUp, Brain, Target, ThumbsDown } from "lucide-react";
 import { formatTime } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -60,7 +60,8 @@ export default function InterviewPage() {
 
   const [isRecording, setIsRecording] = useState(false);
   const speechRecognitionRef = useRef<SpeechRecognition | null>(null);
-  const textBeforeRecordingRef = useRef<string>(""); // Stores text before current recording session
+  const textBeforeRecordingRef = useRef<string>("");
+  const currentSpokenTextRef = useRef<string>(""); // Tracks spoken text within the current session
   
   const { toast } = useToast();
 
@@ -77,71 +78,64 @@ export default function InterviewPage() {
         speechRecognitionRef.current.continuous = true;
         speechRecognitionRef.current.lang = 'en-US';
         speechRecognitionRef.current.interimResults = true;
+
+        speechRecognitionRef.current.onresult = (event: any) => {
+          let interimTranscript = '';
+          let finalTranscript = '';
+    
+          for (let i = 0; i < event.results.length; ++i) {
+            if (event.results[i].isFinal) {
+              finalTranscript += event.results[i][0].transcript + ' ';
+            } else {
+              interimTranscript += event.results[i][0].transcript;
+            }
+          }
+          
+          currentSpokenTextRef.current = finalTranscript.trim() + (interimTranscript ? (finalTranscript ? ' ' : '') + interimTranscript : '');
+          
+          let combinedAnswer = textBeforeRecordingRef.current;
+          if (currentSpokenTextRef.current) {
+            if (combinedAnswer && !combinedAnswer.endsWith(" ") && !currentSpokenTextRef.current.startsWith(" ")) {
+              combinedAnswer += " ";
+            }
+            combinedAnswer += currentSpokenTextRef.current;
+          }
+          setAnswer(combinedAnswer);
+        };
+        
+        speechRecognitionRef.current.onerror = (event: any) => {
+          console.error("Speech recognition error", event.error);
+          toast({
+            title: "Speech Recognition Error",
+            description: event.error === 'no-speech' ? "No speech detected. Please try again." : "An error occurred during speech recognition.",
+            variant: "destructive",
+          });
+          if(isRecording) setIsRecording(false);
+        };
+    
+        speechRecognitionRef.current.onend = () => {
+          if (isRecording) { 
+            setIsRecording(false); 
+          }
+          // Finalize the text by consolidating textBeforeRecording + currentSpokenText
+           let finalAnswer = textBeforeRecordingRef.current;
+           if (currentSpokenTextRef.current) {
+             if (finalAnswer && !finalAnswer.endsWith(" ") && !currentSpokenTextRef.current.startsWith(" ")) {
+               finalAnswer += " ";
+             }
+             finalAnswer += currentSpokenTextRef.current.trim(); // Use trimmed final spoken text
+           }
+           setAnswer(finalAnswer);
+           textBeforeRecordingRef.current = finalAnswer; // Update for next potential recording
+           currentSpokenTextRef.current = ""; // Reset for next session
+        };
+
       } else if (!SpeechRecognitionAPI) {
         console.warn("Speech Recognition API not supported in this browser.");
-        toast({
-          title: "Unsupported Feature",
-          description: "Speech recognition is not available in your browser.",
-          variant: "destructive",
-        });
       }
     }
-  }, [toast]);
-
-  useEffect(() => {
-    if (!speechRecognitionRef.current) return;
-
-    const recognition = speechRecognitionRef.current;
-
-    recognition.onresult = (event: any) => {
-      let sessionFinalTranscript = "";
-      let currentInterimTranscript = "";
-
-      for (let i = 0; i < event.results.length; ++i) {
-        const transcriptSegment = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          sessionFinalTranscript += transcriptSegment + " ";
-        } else {
-          currentInterimTranscript = transcriptSegment; // Keep updating with the latest interim
-        }
-      }
-      sessionFinalTranscript = sessionFinalTranscript.trim();
-      
-      let newSpokenText = sessionFinalTranscript;
-      if (currentInterimTranscript) {
-        if (newSpokenText) newSpokenText += " ";
-        newSpokenText += currentInterimTranscript;
-      }
-
-      let combinedAnswer = textBeforeRecordingRef.current;
-      if (newSpokenText) {
-        if (combinedAnswer && !combinedAnswer.endsWith(" ")) {
-          combinedAnswer += " ";
-        }
-        combinedAnswer += newSpokenText;
-      }
-      setAnswer(combinedAnswer);
-    };
-    
-    recognition.onerror = (event: any) => {
-      console.error("Speech recognition error", event.error);
-      toast({
-        title: "Speech Recognition Error",
-        description: event.error === 'no-speech' ? "No speech detected. Please try again." : "An error occurred during speech recognition.",
-        variant: "destructive",
-      });
-      if(isRecording) setIsRecording(false); // Ensure recording state is reset
-    };
-
-    recognition.onend = () => {
-      // This onend can be triggered by .stop() or naturally.
-      // We only want to set isRecording to false if it was programmatically stopped OR if it's still true.
-      if (isRecording) { 
-        setIsRecording(false); 
-      }
-    };
-  }, [isRecording, toast]); // isRecording dependency is important here if onend behavior relies on it
-
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [toast]); // Removed isRecording dependency here
 
   const startStopwatch = useCallback(() => {
     if (stopwatchIntervalRef.current) clearInterval(stopwatchIntervalRef.current);
@@ -166,8 +160,9 @@ export default function InterviewPage() {
     setFeedback(null);
     setAnswer("");
     textBeforeRecordingRef.current = ""; 
+    currentSpokenTextRef.current = "";
     if (isRecording && speechRecognitionRef.current) {
-      speechRecognitionRef.current.stop(); // This will trigger onend, which sets isRecording to false.
+      speechRecognitionRef.current.stop(); 
     }
     try {
       const questionData = await generateInterviewQuestion(values as GenerateInterviewQuestionInput);
@@ -192,7 +187,7 @@ export default function InterviewPage() {
     setFeedback(null);
     stopStopwatch();
     if (isRecording && speechRecognitionRef.current) {
-      speechRecognitionRef.current.stop(); // This will trigger onend, which sets isRecording to false.
+      speechRecognitionRef.current.stop(); 
     }
     try {
       const feedbackData = await generateAnswerFeedback({
@@ -203,12 +198,11 @@ export default function InterviewPage() {
       } as GenerateAnswerFeedbackInput);
       setFeedback(feedbackData);
       setCurrentStep("feedback_generated");
-    } catch (error)
-{
+    } catch (error) {
       console.error("Error generating feedback:", error);
       toast({
         title: "Error",
-        description: "Failed to generate feedback. Please try again.",
+        description: "Failed to generate feedback. The AI might be having trouble, or your answer is too short. Please try again.",
         variant: "destructive",
       });
     } finally {
@@ -227,12 +221,10 @@ export default function InterviewPage() {
     }
     if (isRecording) {
       speechRecognitionRef.current.stop(); 
-      // onend will set isRecording to false
     } else {
       try {
-        // Capture text just before starting a new recording session.
-        // This ensures that if the user types then records, the typed text is preserved.
-        textBeforeRecordingRef.current = answer; 
+        textBeforeRecordingRef.current = answer; // Capture current text
+        currentSpokenTextRef.current = ""; // Reset spoken text for new session
         speechRecognitionRef.current.start();
         setIsRecording(true);
         if (!isStopwatchRunning && currentStep === "question_generated") {
@@ -249,7 +241,7 @@ export default function InterviewPage() {
             description: description,
             variant: "destructive",
         });
-        setIsRecording(false); // Ensure state is reset if start fails
+        setIsRecording(false); 
       }
     }
   };
@@ -263,34 +255,44 @@ export default function InterviewPage() {
     setElapsedTime(0);
     stopStopwatch();
     textBeforeRecordingRef.current = "";
+    currentSpokenTextRef.current = "";
     if (isRecording && speechRecognitionRef.current) {
       speechRecognitionRef.current.stop();
     }
-    // isRecording will be set to false by the onend handler
   };
 
   useEffect(() => {
-    // Cleanup function
     return () => {
       if (stopwatchIntervalRef.current) {
         clearInterval(stopwatchIntervalRef.current);
       }
-      // Stop recognition if active and component unmounts
-      if (speechRecognitionRef.current && isRecording) {
-         speechRecognitionRef.current.stop();
-      }
-      // Nullify handlers to prevent calls on unmounted component, though usually not needed with modern React
       if (speechRecognitionRef.current) {
-        speechRecognitionRef.current.onresult = null;
-        speechRecognitionRef.current.onerror = null;
-        speechRecognitionRef.current.onend = null;
+         if(isRecording) speechRecognitionRef.current.stop();
+         // Detach handlers to prevent issues on unmount
+         speechRecognitionRef.current.onresult = null;
+         speechRecognitionRef.current.onerror = null;
+         speechRecognitionRef.current.onend = null;
       }
     };
-  }, [isRecording]); // Add isRecording to dependencies to ensure cleanup is correct if it changes
+  }, [isRecording]);
+
+  const getScoreColor = (score: number | undefined): string => {
+    if (score === undefined) return "text-gray-400"; // Fallback for undefined score
+    if (score <= 1) return "text-red-500";
+    if (score === 2) return "text-orange-500";
+    if (score === 3) return "text-yellow-500";
+    if (score === 4) return "text-lime-500"; 
+    if (score >= 5) return "text-green-600";
+    return "text-gray-400"; // Default
+  };
+
+  const OverallFeedbackIcon = feedback?.overallFeedback?.score !== undefined && feedback.overallFeedback.score <= 2 ? ThumbsDown : ThumbsUp;
+  const overallIconColor = getScoreColor(feedback?.overallFeedback?.score);
+
 
   return (
-    <div className="flex flex-col min-h-screen">
-      <header className="py-6 px-4 md:px-8 border-b">
+    <div className="flex flex-col min-h-screen bg-background">
+      <header className="py-6 px-4 md:px-8 border-b border-border">
         <div className="container mx-auto flex items-center justify-between">
           <AppLogo />
           {currentStep !== "initial" && (
@@ -394,10 +396,8 @@ export default function InterviewPage() {
                     placeholder="Type your answer here..."
                     value={answer}
                     onChange={(e) => {
-                      // Allow typing only if not currently recording
                       if (!isRecording) { 
                         setAnswer(e.target.value);
-                        // If user types, this becomes the new baseline for subsequent recordings
                         textBeforeRecordingRef.current = e.target.value;
                       }
                     }}
@@ -445,34 +445,34 @@ export default function InterviewPage() {
                 <Accordion type="single" collapsible defaultValue="item-1" className="w-full">
                   <AccordionItem value="item-1">
                     <AccordionTrigger className="text-xl hover:no-underline">
-                      <ThumbsUp className="mr-2 h-5 w-5 text-green-600" /> Overall Feedback
+                      <OverallFeedbackIcon className={`mr-2 h-5 w-5 ${overallIconColor}`} /> Overall Feedback
                     </AccordionTrigger>
                     <AccordionContent className="text-base leading-relaxed p-1">
-                      {feedback.feedback}
+                      {feedback.overallFeedback.text} (Score: {feedback.overallFeedback.score}/5)
                     </AccordionContent>
                   </AccordionItem>
                   <AccordionItem value="item-2">
                     <AccordionTrigger className="text-xl hover:no-underline">
-                       <Brain className="mr-2 h-5 w-5 text-yellow-500" /> Clarity
+                       <Brain className={`mr-2 h-5 w-5 ${getScoreColor(feedback.clarity.score)}`} /> Clarity
                     </AccordionTrigger>
                     <AccordionContent className="text-base leading-relaxed p-1">
-                       {feedback.clarity}
+                       {feedback.clarity.text} (Score: {feedback.clarity.score}/5)
                     </AccordionContent>
                   </AccordionItem>
                   <AccordionItem value="item-3">
                     <AccordionTrigger className="text-xl hover:no-underline">
-                       <Info className="mr-2 h-5 w-5 text-orange-500" /> Completeness
+                       <Info className={`mr-2 h-5 w-5 ${getScoreColor(feedback.completeness.score)}`} /> Completeness
                     </AccordionTrigger>
                     <AccordionContent className="text-base leading-relaxed p-1">
-                       {feedback.completeness}
+                       {feedback.completeness.text} (Score: {feedback.completeness.score}/5)
                     </AccordionContent>
                   </AccordionItem>
                   <AccordionItem value="item-4">
                     <AccordionTrigger className="text-xl hover:no-underline">
-                       <Target className="mr-2 h-5 w-5 text-lime-500" /> Relevance
+                       <Target className={`mr-2 h-5 w-5 ${getScoreColor(feedback.relevance.score)}`} /> Relevance
                     </AccordionTrigger>
                     <AccordionContent className="text-base leading-relaxed p-1">
-                       {feedback.relevance}
+                       {feedback.relevance.text} (Score: {feedback.relevance.score}/5)
                     </AccordionContent>
                   </AccordionItem>
                 </Accordion>
@@ -487,7 +487,7 @@ export default function InterviewPage() {
         </div>
       </main>
 
-      <footer className="py-6 px-4 md:px-8 border-t mt-auto">
+      <footer className="py-6 px-4 md:px-8 border-t mt-auto border-border">
         <div className="container mx-auto text-center text-muted-foreground">
           <p>&copy; {new Date().getFullYear()} AceInterview. Powered by AI.</p>
         </div>
